@@ -11,7 +11,7 @@ class Driver(SQLModel, table=True):
 
 
 class Delivery(SQLModel, table=True):
-    __tablename__: str = "payments"
+    __tablename__: str = "deliveries"
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int
