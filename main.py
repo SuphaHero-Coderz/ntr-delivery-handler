@@ -1,11 +1,18 @@
 import os
+import requests
+import random
 import logging as LOG
 import json
 import uuid
 from dotenv import load_dotenv
-from src.models import Delivery
 from src.redis import RedisResource, Queue
+from src.models import Delivery, Driver
 import src.db_services as _services
+from src.exceptions import (
+    DriverAbsolutelyDemolishedBySingleMotherInSubaru,
+    DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
+    JamaisVuDerealization,
+)
 
 load_dotenv()
 
@@ -53,14 +60,130 @@ def watch_queue(redis_conn, queue_name, callback_func, timeout=30):
                 redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(task))
 
 
+def attempt_delivery(delivery_id: int) -> None:
+    """
+    Rolls the dice on delivery
+
+    Args:
+        delivery_id (int): delivery id to deliver
+
+    Raises:
+        DriverAbsolutelyDemolishedBySingleMotherInSubaru: pretty straightforward
+        DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace: yes
+        JamaisVuDerealization: pretty straightforward
+    """
+    rng: float = random.random()
+
+    if rng < 0.8:
+        _services.mark_delivery_as_complete(delivery_id=delivery_id)
+    elif rng < 0.9:
+        raise DriverAbsolutelyDemolishedBySingleMotherInSubaru
+    elif rng < 0.95:
+        raise DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace
+    else:
+        # I'm losing my mind
+        raise JamaisVuDerealization
+
+
+def create_delivery(order_id: int, user_id: int) -> int:
+    """
+    Creates a delivery in the database
+
+    Args:
+        order_id (int): order id
+        user_id (int): user id
+
+    Returns:
+        int: delivery id
+    """
+    LOG.info(f"Creating delivery for order {order_id}")
+    driver: Driver = _services.get_random_driver()
+    delivery: Delivery = Delivery(
+        order_id=order_id, user_id=user_id, driver_id=driver.id
+    )
+    delivery = _services.create_delivery(delivery)
+
+    return delivery.id
+
+
+def update_order_status(order_id: int, status: str, status_message: str) -> None:
+    """
+    Sends a request to update order status in order service
+
+    Args:
+        order_id (int): order id to update
+        status (str): status message
+    """
+    LOG.info(f"Updating status for order with id {order_id}: {status}")
+    requests.put(
+        "http://order-handler/update-order-status",
+        params={
+            "order_id": order_id,
+            "status": status,
+            "status_message": status_message,
+        },
+    )
+
+
+def rollback(order_id: int, user_id: int, num_tokens: int) -> None:
+    """
+    Rolls back changes made
+
+    Args:
+        order_id (int): order id
+        user_id (int): user id
+        num_tokens (int): number of tokens
+    """
+    LOG.warning(f"Rolling back for order id {order_id}")
+    send_rollback_request(
+        Queue.inventory_queue,
+        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens},
+    )
+
+
+def send_rollback_request(queue: Queue, data: dict) -> None:
+    """
+    Sends a notice to rollback to preceding service
+
+    Args:
+        queue (Queue): queue to send notice to
+        data (dict): order information
+    """
+    LOG.warning(f"Sending rollback request to {queue.value}")
+    data = {"task": "rollback", **data}
+    RedisResource.push_to_queue(queue, data)
+
+
 def process_message(data):
     """
     Processes an incoming message from the work queue
     """
-    delivery: Delivery = Delivery(user_id=data["user_id"], order_id=data["order_id"])
+    try:
+        if data["task"] == "rollback":
+            rollback(data["order_id"], data["user_id"], data["num_tokens"])
+        else:
+            order_id: int = data["order_id"]
+            user_id: int = data["user_id"]
+            num_tokens: int = data["num_tokens"]
 
-    LOG.info("Creating delivery")
-    _services.create_delivery(delivery)
+            delivery_id: int = create_delivery(
+                order_id=order_id,
+                user_id=user_id,
+            )
+
+            attempt_delivery(delivery_id)
+
+            update_order_status(
+                order_id=order_id, status="complete", status_message="Order complete"
+            )
+    except Exception as e:
+        LOG.error("ERROR OCCURED! ", e.message)
+        update_order_status(
+            order_id=order_id,
+            status="failed",
+            status_message=e.message,
+        )
+        rollback(order_id, user_id, num_tokens)
 
 
 def main():
@@ -77,4 +200,5 @@ def main():
 
 if __name__ == "__main__":
     _services.create_database()
+    _services.populate_drivers()
     main()
