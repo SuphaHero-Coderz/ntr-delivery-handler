@@ -13,6 +13,12 @@ from src.exceptions import (
     DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
     JamaisVuDerealization,
 )
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+provider = TracerProvider()
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 load_dotenv()
 
@@ -55,9 +61,12 @@ def watch_queue(redis_conn, queue_name, callback_func, timeout=30):
                 data = {"status": -1, "message": "An error occurred"}
                 redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(data))
             if task:
-                callback_func(task)
-                data = {"status": 1, "message": "Successfully chunked video"}
-                redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(task))
+                carrier = {"traceparent": task["traceparent"]}
+                ctx = TraceContextTextMapPropagator().extract(carrier)
+                with tracer.start_as_current_span("finish transaction", context=ctx):
+                    callback_func(task)
+                    data = {"status": 1, "message": "Successfully chunked video"}
+                    redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(task))
 
 
 def attempt_delivery(delivery_id: int) -> None:
