@@ -61,13 +61,9 @@ def watch_queue(redis_conn, queue_name, callback_func, timeout=30):
                 data = {"status": -1, "message": "An error occurred"}
                 redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(data))
             if task:
-                # get trace context from the task and create new span using the context
-                carrier = {"traceparent": task["traceparent"]}
-                ctx = TraceContextTextMapPropagator().extract(carrier)
-                with tracer.start_as_current_span("finish transaction", context=ctx):
-                    callback_func(task)
-                    data = {"status": 1, "message": "Successfully chunked video"}
-                    redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(task))
+                callback_func(task)
+                data = {"status": 1, "message": "Successfully chunked video"}
+                redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(task))
 
 
 def attempt_delivery(delivery_id: int) -> None:
@@ -172,20 +168,24 @@ def process_message(data):
         if data["task"] == "rollback":
             rollback(data["order_id"], data["user_id"], data["num_tokens"])
         else:
-            order_id: int = data["order_id"]
-            user_id: int = data["user_id"]
-            num_tokens: int = data["num_tokens"]
+            # get trace context from the task and create new span using the context
+            carrier = {"traceparent": data["traceparent"]}
+            ctx = TraceContextTextMapPropagator().extract(carrier)
+            with tracer.start_as_current_span("finish transaction", context=ctx):
+                order_id: int = data["order_id"]
+                user_id: int = data["user_id"]
+                num_tokens: int = data["num_tokens"]
 
-            delivery_id: int = create_delivery(
-                order_id=order_id,
-                user_id=user_id,
-            )
+                delivery_id: int = create_delivery(
+                    order_id=order_id,
+                    user_id=user_id,
+                )
 
-            attempt_delivery(delivery_id)
+                attempt_delivery(delivery_id)
 
-            update_order_status(
-                order_id=order_id, status="complete", status_message="Order complete"
-            )
+                update_order_status(
+                    order_id=order_id, status="complete", status_message="Order complete"
+                )
     except Exception as e:
         LOG.error("ERROR OCCURED! ", e.message)
         update_order_status(
