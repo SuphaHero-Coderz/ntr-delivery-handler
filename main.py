@@ -61,6 +61,7 @@ def watch_queue(redis_conn, queue_name, callback_func, timeout=30):
                 data = {"status": -1, "message": "An error occurred"}
                 redis_conn.publish(DELIVERY_QUEUE_NAME, json.dumps(data))
             if task:
+                # get trace context from the task and create new span using the context
                 carrier = {"traceparent": task["traceparent"]}
                 ctx = TraceContextTextMapPropagator().extract(carrier)
                 with tracer.start_as_current_span("finish transaction", context=ctx):
