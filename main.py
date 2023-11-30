@@ -13,6 +13,12 @@ from src.exceptions import (
     DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
     JamaisVuDerealization,
 )
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+provider = TracerProvider()
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 load_dotenv()
 
@@ -125,7 +131,7 @@ def update_order_status(order_id: int, status: str, status_message: str) -> None
     )
 
 
-def rollback(order_id: int, user_id: int, num_tokens: int) -> None:
+def rollback(order_id: int, user_id: int, num_tokens: int, traceparent) -> None:
     """
     Rolls back changes made
 
@@ -137,7 +143,7 @@ def rollback(order_id: int, user_id: int, num_tokens: int) -> None:
     LOG.warning(f"Rolling back for order id {order_id}")
     send_rollback_request(
         Queue.inventory_queue,
-        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens},
+        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens, "traceparent": traceparent},
     )
 
 
@@ -149,9 +155,16 @@ def send_rollback_request(queue: Queue, data: dict) -> None:
         queue (Queue): queue to send notice to
         data (dict): order information
     """
-    LOG.warning(f"Sending rollback request to {queue.value}")
-    data = {"task": "rollback", **data}
-    RedisResource.push_to_queue(queue, data)
+    carrier = {"traceparent": data["traceparent"]}
+    ctx = TraceContextTextMapPropagator().extract(carrier)
+    with tracer.start_as_current_span("rollback delivery", context=ctx):
+        carrier = {}
+        # pass the current context to the next service
+        TraceContextTextMapPropagator().inject(carrier)
+        data["traceparent"] = carrier["traceparent"]
+        LOG.warning(f"Sending rollback request to {queue.value}")
+        data = {"task": "rollback", **data}
+        RedisResource.push_to_queue(queue, data)
 
 
 def process_message(data):
@@ -160,22 +173,26 @@ def process_message(data):
     """
     try:
         if data["task"] == "rollback":
-            rollback(data["order_id"], data["user_id"], data["num_tokens"])
+            rollback(data["order_id"], data["user_id"], data["num_tokens"], data["traceparent"])
         else:
-            order_id: int = data["order_id"]
-            user_id: int = data["user_id"]
-            num_tokens: int = data["num_tokens"]
+            # get trace context from the task and create new span using the context
+            carrier = {"traceparent": data["traceparent"]}
+            ctx = TraceContextTextMapPropagator().extract(carrier)
+            with tracer.start_as_current_span("finish transaction", context=ctx):
+                order_id: int = data["order_id"]
+                user_id: int = data["user_id"]
+                num_tokens: int = data["num_tokens"]
 
-            delivery_id: int = create_delivery(
-                order_id=order_id,
-                user_id=user_id,
-            )
+                delivery_id: int = create_delivery(
+                    order_id=order_id,
+                    user_id=user_id,
+                )
 
-            attempt_delivery(delivery_id)
+                attempt_delivery(delivery_id)
 
-            update_order_status(
-                order_id=order_id, status="complete", status_message="Order complete"
-            )
+                update_order_status(
+                    order_id=order_id, status="complete", status_message="Order complete"
+                )
     except Exception as e:
         LOG.error("ERROR OCCURED! ", e.message)
         update_order_status(
@@ -183,7 +200,7 @@ def process_message(data):
             status="failed",
             status_message=e.message,
         )
-        rollback(order_id, user_id, num_tokens)
+        rollback(order_id, user_id, num_tokens, data["traceparent"])
 
 
 def main():
