@@ -131,7 +131,7 @@ def update_order_status(order_id: int, status: str, status_message: str) -> None
     )
 
 
-def rollback(order_id: int, user_id: int, num_tokens: int) -> None:
+def rollback(order_id: int, user_id: int, num_tokens: int, traceparent) -> None:
     """
     Rolls back changes made
 
@@ -143,7 +143,7 @@ def rollback(order_id: int, user_id: int, num_tokens: int) -> None:
     LOG.warning(f"Rolling back for order id {order_id}")
     send_rollback_request(
         Queue.inventory_queue,
-        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens},
+        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens, "traceparent": traceparent},
     )
 
 
@@ -155,9 +155,16 @@ def send_rollback_request(queue: Queue, data: dict) -> None:
         queue (Queue): queue to send notice to
         data (dict): order information
     """
-    LOG.warning(f"Sending rollback request to {queue.value}")
-    data = {"task": "rollback", **data}
-    RedisResource.push_to_queue(queue, data)
+    carrier = {"traceparent": data["traceparent"]}
+    ctx = TraceContextTextMapPropagator().extract(carrier)
+    with tracer.start_as_current_span("rollback delivery", context=ctx):
+        carrier = {}
+        # pass the current context to the next service
+        TraceContextTextMapPropagator().inject(carrier)
+        data["traceparent"] = carrier["traceparent"]
+        LOG.warning(f"Sending rollback request to {queue.value}")
+        data = {"task": "rollback", **data}
+        RedisResource.push_to_queue(queue, data)
 
 
 def process_message(data):
@@ -166,7 +173,7 @@ def process_message(data):
     """
     try:
         if data["task"] == "rollback":
-            rollback(data["order_id"], data["user_id"], data["num_tokens"])
+            rollback(data["order_id"], data["user_id"], data["num_tokens"], data["traceparent"])
         else:
             # get trace context from the task and create new span using the context
             carrier = {"traceparent": data["traceparent"]}
@@ -193,7 +200,7 @@ def process_message(data):
             status="failed",
             status_message=e.message,
         )
-        rollback(order_id, user_id, num_tokens)
+        rollback(order_id, user_id, num_tokens, data["traceparent"])
 
 
 def main():
