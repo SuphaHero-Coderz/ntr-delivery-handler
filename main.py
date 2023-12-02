@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from src.redis import RedisResource, Queue
 from src.models import Delivery, Driver
 import src.db_services as _services
+from pythonjsonlogger import jsonlogger
 from src.exceptions import (
     DriverAbsolutelyDemolishedBySingleMotherInSubaru,
     DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
@@ -16,9 +17,12 @@ from src.exceptions import (
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-provider = TracerProvider()
-trace.set_tracer_provider(provider)
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry._logs import set_logger_provider
+
 tracer = trace.get_tracer(__name__)
+
+
 
 load_dotenv()
 
@@ -27,10 +31,6 @@ DELIVERY_QUEUE_NAME = os.getenv("DELIVERY_QUEUE_NAME")
 
 QUEUE_NAME = f"queue:{DELIVERY_QUEUE_NAME}"
 INSTANCE_NAME = uuid.uuid4().hex
-
-LOG.basicConfig(
-    level=LOG.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 
 
 def watch_queue(redis_conn, queue_name, callback_func, timeout=30):
@@ -120,7 +120,11 @@ def update_order_status(order_id: int, status: str, status_message: str) -> None
         order_id (int): order id to update
         status (str): status message
     """
-    LOG.info(f"Updating status for order with id {order_id}: {status}")
+    ctx = trace.get_current_span().get_span_context()
+    span_id = ctx.span_id
+    trace_id = ctx.trace_id
+    LOG.info(f"Updating status for order with id {order_id}: {status} trace_id={trace_id} span_id={span_id}",
+            extra={"otelTraceId": trace_id, "otelSpanId": span_id})
     requests.put(
         "http://order-handler/update-order-status",
         params={
@@ -179,6 +183,7 @@ def process_message(data):
             carrier = {"traceparent": data["traceparent"]}
             ctx = TraceContextTextMapPropagator().extract(carrier)
             with tracer.start_as_current_span("finish transaction", context=ctx):
+                LOG.info("begin delivery")
                 order_id: int = data["order_id"]
                 user_id: int = data["user_id"]
                 num_tokens: int = data["num_tokens"]
@@ -193,8 +198,9 @@ def process_message(data):
                 update_order_status(
                     order_id=order_id, status="complete", status_message="Order complete"
                 )
+                LOG.info("finish delivery")
     except Exception as e:
-        LOG.error("ERROR OCCURED! ", e.message)
+        LOG.error("ERROR OCCURED! ")
         update_order_status(
             order_id=order_id,
             status="failed",
