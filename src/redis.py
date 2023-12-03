@@ -6,6 +6,7 @@ from enum import Enum
 from dotenv import load_dotenv
 from typing import Dict
 from opentelemetry.instrumentation.redis import RedisInstrumentor
+
 load_dotenv()
 
 RedisInstrumentor().instrument()

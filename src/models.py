@@ -1,6 +1,7 @@
 from sqlmodel import Field, SQLModel, Relationship
 from typing import Optional
 
+
 class Driver(SQLModel, table=True):
     __tablename__: str = "drivers"
 

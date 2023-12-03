@@ -12,10 +12,12 @@ from src.exceptions import (
     DriverAbsolutelyDemolishedBySingleMotherInSubaru,
     DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
     JamaisVuDerealization,
+    ForcedFailureError,
 )
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
+
 provider = TracerProvider()
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
@@ -143,7 +145,12 @@ def rollback(order_id: int, user_id: int, num_tokens: int, traceparent) -> None:
     LOG.warning(f"Rolling back for order id {order_id}")
     send_rollback_request(
         Queue.inventory_queue,
-        {"order_id": order_id, "user_id": user_id, "num_tokens": num_tokens, "traceparent": traceparent},
+        {
+            "order_id": order_id,
+            "user_id": user_id,
+            "num_tokens": num_tokens,
+            "traceparent": traceparent,
+        },
     )
 
 
@@ -173,7 +180,12 @@ def process_message(data):
     """
     try:
         if data["task"] == "rollback":
-            rollback(data["order_id"], data["user_id"], data["num_tokens"], data["traceparent"])
+            rollback(
+                data["order_id"],
+                data["user_id"],
+                data["num_tokens"],
+                data["traceparent"],
+            )
         else:
             # get trace context from the task and create new span using the context
             carrier = {"traceparent": data["traceparent"]}
@@ -182,16 +194,23 @@ def process_message(data):
                 order_id: int = data["order_id"]
                 user_id: int = data["user_id"]
                 num_tokens: int = data["num_tokens"]
+                delivery_fail: bool = data["delivery_fail"]
+
+                if delivery_fail:
+                    raise ForcedFailureError
 
                 delivery_id: int = create_delivery(
                     order_id=order_id,
                     user_id=user_id,
                 )
 
-                attempt_delivery(delivery_id)
+                # attempt_delivery(delivery_id)
+                _services.mark_delivery_as_complete(delivery_id=delivery_id)
 
                 update_order_status(
-                    order_id=order_id, status="complete", status_message="Order complete"
+                    order_id=order_id,
+                    status="complete",
+                    status_message="Order complete",
                 )
     except Exception as e:
         LOG.error("ERROR OCCURED! ", e.message)
