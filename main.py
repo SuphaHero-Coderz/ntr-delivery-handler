@@ -18,15 +18,9 @@ from src.exceptions import (
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-<<<<<<< HEAD
-
-provider = TracerProvider()
-trace.set_tracer_provider(provider)
-=======
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry._logs import set_logger_provider
 
->>>>>>> 34356b83bda27e12df14538540c9214a8f0cf8c8
 tracer = trace.get_tracer(__name__)
 
 
