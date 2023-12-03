@@ -24,7 +24,6 @@ from opentelemetry._logs import set_logger_provider
 tracer = trace.get_tracer(__name__)
 
 
-
 load_dotenv()
 
 REDIS_QUEUE_LOCATION = os.getenv("REDIS_QUEUE", "localhost")
@@ -124,8 +123,10 @@ def update_order_status(order_id: int, status: str, status_message: str) -> None
     ctx = trace.get_current_span().get_span_context()
     span_id = ctx.span_id
     trace_id = ctx.trace_id
-    LOG.info(f"Updating status for order with id {order_id}: {status} trace_id={trace_id} span_id={span_id}",
-            extra={"otelTraceId": trace_id, "otelSpanId": span_id})
+    LOG.info(
+        f"Updating status for order with id {order_id}: {status} trace_id={trace_id} span_id={span_id}",
+        extra={"otelTraceId": trace_id, "otelSpanId": span_id},
+    )
     requests.put(
         "http://order-handler/update-order-status",
         params={
