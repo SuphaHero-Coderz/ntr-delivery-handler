@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from src.redis import RedisResource, Queue
 from src.models import Delivery, Driver
 import src.db_services as _services
-from pythonjsonlogger import jsonlogger
 from src.exceptions import (
     DriverAbsolutelyDemolishedBySingleMotherInSubaru,
     DriverAccidentallyHitAPotholeAndLaunchedThemselvesIntoOuterSpace,
@@ -17,9 +16,6 @@ from src.exceptions import (
 )
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry._logs import set_logger_provider
 
 tracer = trace.get_tracer(__name__)
 
